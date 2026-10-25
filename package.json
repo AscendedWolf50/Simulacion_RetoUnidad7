@@ -1,0 +1,23 @@
+{
+  "name": "simulacion_retounidad7",
+  "version": "1.0.0",
+  "description": "Sistema tipográfico jugable e interactivo - MTV Stencil Rebellion",
+  "main": "index.html",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AscendedWolf50/Simulacion_RetoUnidad7.git"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}
