@@ -1,10 +1,13 @@
 import * as THREE from 'three';
 import { CanvasBuffer } from './CanvasBuffer.js';
 
-// 1. Instanciar Buffer de Pintura y Textura 3D
-const buffer = new CanvasBuffer(2048, 2048);
+// 1. Buffer de Pintura (1024x1024) y Textura 3D Optimizada
+const buffer = new CanvasBuffer(1024, 1024);
 const canvasTexture = new THREE.CanvasTexture(buffer.canvas);
 canvasTexture.colorSpace = THREE.SRGBColorSpace;
+canvasTexture.generateMipmaps = false;
+canvasTexture.minFilter = THREE.LinearFilter;
+canvasTexture.magFilter = THREE.LinearFilter;
 
 // 2. Escena, Cámara y Renderer 3D
 const container = document.getElementById('webgl-canvas');
@@ -15,7 +18,7 @@ camera.position.set(0, 0, 7);
 
 const renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
 // Iluminación
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
@@ -58,6 +61,7 @@ let isPainting = false;
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let currentUV = null;
+let lastUV = null;
 
 function updatePreviewMesh() {
   if (currentTool === 'spray') {
@@ -161,10 +165,10 @@ window.addEventListener('pointerdown', (e) => {
   if (e.target.closest('#ui')) return;
 
   if (currentTool === 'spray') {
-    // Solo activa el flujo de pintura si la herramienta es Aerosol Libre
     isPainting = true;
+    updateMouseUV(e);
+    lastUV = currentUV ? { ...currentUV } : null;
   } else {
-    // Si es un stencil, unicamente se fija en la pared sin pintar
     placeStencilAtCurrentUV();
   }
   
@@ -187,7 +191,10 @@ window.addEventListener('pointermove', (e) => {
   });
 });
 
-window.addEventListener('pointerup', () => isPainting = false);
+window.addEventListener('pointerup', () => {
+  isPainting = false;
+  lastUV = null;
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -196,7 +203,7 @@ window.addEventListener('resize', () => {
 });
 
 // -----------------------------------------------------------------
-// BUCLE DE RENDERIZADO
+// BUCLE DE RENDERIZADO A 60 FPS CONSTANTES
 // -----------------------------------------------------------------
 let lastSprayTime = 0;
 
@@ -205,9 +212,11 @@ function animate(time) {
 
   if (isPainting && currentUV && currentTool === 'spray') {
     if (time - lastSprayTime > 16) {
-      buffer.sprayPaint(currentUV.x, currentUV.y, currentColor, 140, placedStencils);
+      const startUV = lastUV || currentUV;
+      buffer.sprayPaint(startUV, currentUV, currentColor, 65, placedStencils);
       canvasTexture.needsUpdate = true;
       lastSprayTime = time;
+      lastUV = { ...currentUV };
     }
   }
 

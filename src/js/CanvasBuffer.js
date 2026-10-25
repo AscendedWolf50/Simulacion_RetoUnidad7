@@ -1,5 +1,17 @@
+function hexToRgba(hex, alpha = 1) {
+  let c = hex.replace('#', '').trim();
+  if (c.length === 3) {
+    c = c.split('').map(x => x + x).join('');
+  }
+  const num = parseInt(c, 16);
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export class CanvasBuffer {
-  constructor(width = 2048, height = 2048) {
+  constructor(width = 1024, height = 1024) {
     this.canvas = document.createElement('canvas');
     this.canvas.width = width;
     this.canvas.height = height;
@@ -12,9 +24,66 @@ export class CanvasBuffer {
     this.maskCtx = this.maskCanvas.getContext('2d');
 
     this.PREVIEW_SCALE = 0.5;
-    this.BUFFER_SCALE = this.PREVIEW_SCALE * ((2048 * 1.8) / (512 * 5.5)); // ≈ 0.654545
-    
+    this.BUFFER_SCALE = this.PREVIEW_SCALE * ((width * 1.8) / (512 * 5.5));
+    this.sheetWidth = (1.8 / 5.5) * width * (472 / 512);
+
+    this.currentColor = '';
+    this.currentRadius = 0;
+    this.brushCanvas = null;
+
+    // Caché de Path2D para máscaras de recorte
+    this.stencilPathCache = new Map();
+
     this.resetToCorporateGrid();
+  }
+
+  // -----------------------------------------------------------------
+  // PRE-RENDERIZADO DE PINCEL DE AEROSOL
+  // -----------------------------------------------------------------
+  createBrushCanvas(color, radius = 65) {
+    const size = Math.ceil(radius * 2);
+    const bCanvas = document.createElement('canvas');
+    bCanvas.width = size;
+    bCanvas.height = size;
+    const bCtx = bCanvas.getContext('2d');
+    const center = radius;
+
+    // Núcleo de bruma suave
+    const grad = bCtx.createRadialGradient(center, center, 0, center, center, radius);
+    grad.addColorStop(0, hexToRgba(color, 0.25));
+    grad.addColorStop(0.4, hexToRgba(color, 0.09));
+    grad.addColorStop(0.75, hexToRgba(color, 0.02));
+    grad.addColorStop(1, hexToRgba(color, 0));
+
+    bCtx.fillStyle = grad;
+    bCtx.fillRect(0, 0, size, size);
+
+    // Micro-partículas de pigmento optimizadas
+    const dots = 45;
+    bCtx.fillStyle = hexToRgba(color, 0.45);
+    bCtx.beginPath();
+
+    for (let i = 0; i < dots; i++) {
+      const r = Math.pow(Math.random(), 2.1) * radius;
+      const angle = Math.random() * Math.PI * 2;
+      const px = center + Math.cos(angle) * r;
+      const py = center + Math.sin(angle) * r;
+      const dotSize = (1 - r / radius) * 1.8 + Math.random() * 0.7 + 0.4;
+
+      bCtx.moveTo(px + dotSize, py);
+      bCtx.arc(px, py, dotSize, 0, Math.PI * 2);
+    }
+
+    bCtx.fill();
+    return bCanvas;
+  }
+
+  updateBrush(color, radius = 65) {
+    if (this.currentColor !== color || this.currentRadius !== radius) {
+      this.currentColor = color;
+      this.currentRadius = radius;
+      this.brushCanvas = this.createBrushCanvas(color, radius);
+    }
   }
 
   // -----------------------------------------------------------------
@@ -27,8 +96,8 @@ export class CanvasBuffer {
     ctx.fillStyle = '#d8d8d6';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.lineWidth = 2;
-    const margin = 120;
+    ctx.lineWidth = 1.5;
+    const margin = 60;
     const cols = 6;
     const colWidth = (width - margin * 2) / cols;
 
@@ -41,7 +110,7 @@ export class CanvasBuffer {
       ctx.stroke();
     }
 
-    for (let y = margin; y < height - margin; y += 160) {
+    for (let y = margin; y < height - margin; y += 80) {
       ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)';
       ctx.beginPath();
       ctx.moveTo(margin, y);
@@ -50,16 +119,16 @@ export class CanvasBuffer {
     }
 
     ctx.fillStyle = '#111115';
-    ctx.font = '900 110px "Helvetica Neue", Helvetica, Arial, sans-serif';
-    ctx.fillText('SWISS DESIGN', margin, 260);
-    ctx.fillText('STANDARDS', margin, 370);
+    ctx.font = '900 55px "Helvetica Neue", Helvetica, Arial, sans-serif';
+    ctx.fillText('SWISS DESIGN', margin, 130);
+    ctx.fillText('STANDARDS', margin, 185);
 
     ctx.fillStyle = '#55555e';
-    ctx.font = '600 32px "Helvetica Neue", Helvetica, Arial, sans-serif';
-    ctx.fillText('REGULATION 1981 // STRICT GRID ALIGNMENT REQUIRED', margin, 430);
+    ctx.font = '600 16px "Helvetica Neue", Helvetica, Arial, sans-serif';
+    ctx.fillText('REGULATION 1981 // STRICT GRID ALIGNMENT REQUIRED', margin, 215);
 
     ctx.fillStyle = '#333338';
-    ctx.font = '400 22px monospace';
+    ctx.font = '400 11px monospace';
     const sampleText = [
       "1.01 ALL GRAPHIC ELEMENTS MUST CONFORM TO THE 6-COLUMN GRID SYSTEM.",
       "1.02 UNAPPROVED EXPRESSION OR IRREVERENT COLORS ARE STRICTLY FORBIDDEN.",
@@ -68,11 +137,11 @@ export class CanvasBuffer {
     ];
 
     sampleText.forEach((line, idx) => {
-      ctx.fillText(line, margin, 520 + idx * 36);
+      ctx.fillText(line, margin, 260 + idx * 18);
     });
 
     ctx.strokeStyle = '#111115';
-    ctx.lineWidth = 8;
+    ctx.lineWidth = 4;
     ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
   }
 
@@ -123,8 +192,19 @@ export class CanvasBuffer {
     return path;
   }
 
+  getStencilClipPath(type) {
+    if (!this.stencilPathCache.has(type)) {
+      const combinedPath = new Path2D();
+      combinedPath.rect(-this.sheetWidth / 2, -this.sheetWidth / 2, this.sheetWidth, this.sheetWidth);
+      const cutoutPath = this.getStencilPath(type, this.BUFFER_SCALE);
+      combinedPath.addPath(cutoutPath);
+      this.stencilPathCache.set(type, combinedPath);
+    }
+    return this.stencilPathCache.get(type);
+  }
+
   // -----------------------------------------------------------------
-  // LÁMINA FÍSICA DEL STENCIL
+  // LÁMINA FÍSICA DEL STENCIL (VISTA PREVIA DE 512px)
   // -----------------------------------------------------------------
   getStencilPreviewCanvas(type) {
     const pCanvas = document.createElement('canvas');
@@ -161,67 +241,81 @@ export class CanvasBuffer {
   }
 
   // -----------------------------------------------------------------
-  // APLICAR AEROSOL A TRAVÉS DE LAS PLANTILLAS
+  // APLICAR AEROSOL FLUIDO OPTIMIZADO
   // -----------------------------------------------------------------
-  sprayPaint(uvX, uvY, color = '#ff0055', sprayRadius = 140, placedStencils = []) {
-    const x = uvX * this.canvas.width;
-    const y = (1 - uvY) * this.canvas.height;
-    const ctx = this.ctx;
+  sprayPaint(startUV, endUV, color = '#ff0055', sprayRadius = 65, placedStencils = []) {
+    this.updateBrush(color, sprayRadius);
+
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+
+    const x1 = startUV.x * w;
+    const y1 = (1 - startUV.y) * h;
+    const x2 = endUV.x * w;
+    const y2 = (1 - endUV.y) * h;
+
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    const stepSize = 10;
+    const steps = Math.min(12, Math.max(1, Math.floor(dist / stepSize)));
+
+    const sheetWidth = this.sheetWidth;
 
     if (placedStencils.length > 0) {
+      const minX = Math.max(0, Math.floor(Math.min(x1, x2) - sprayRadius - 10));
+      const minY = Math.max(0, Math.floor(Math.min(y1, y2) - sprayRadius - 10));
+      const maxX = Math.min(w, Math.ceil(Math.max(x1, x2) + sprayRadius + 10));
+      const maxY = Math.min(h, Math.ceil(Math.max(y1, y2) + sprayRadius + 10));
+      const bboxW = maxX - minX;
+      const bboxH = maxY - minY;
+
+      if (bboxW <= 0 || bboxH <= 0) return;
+
+      const mCtx = this.maskCtx;
+      mCtx.clearRect(minX, minY, bboxW, bboxH);
+
+      // Estampar trazo de pincel continuo
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const px = x1 + (x2 - x1) * t;
+        const py = y1 + (y2 - y1) * t;
+        mCtx.drawImage(this.brushCanvas, px - sprayRadius, py - sprayRadius);
+      }
+
+      // Recortar sobre stencils colocados mediante la ruta cacheada
       placedStencils.forEach(stencil => {
-        const stX = stencil.uvX * this.canvas.width;
-        const stY = (1 - stencil.uvY) * this.canvas.height;
+        const stX = stencil.uvX * w;
+        const stY = (1 - stencil.uvY) * h;
 
-        const dist = Math.hypot(x - stX, y - stY);
-        if (dist > sprayRadius + 250) return;
-
-        const bboxSize = 500;
-        const clipX = Math.max(0, stX - bboxSize / 2);
-        const clipY = Math.max(0, stY - bboxSize / 2);
-
-        const mCtx = this.maskCtx;
-        mCtx.clearRect(clipX, clipY, bboxSize, bboxSize);
+        if (
+          stX + sheetWidth / 2 < minX ||
+          stX - sheetWidth / 2 > maxX ||
+          stY + sheetWidth / 2 < minY ||
+          stY - sheetWidth / 2 > maxY
+        ) {
+          return;
+        }
 
         mCtx.save();
+        mCtx.globalCompositeOperation = 'destination-out';
         mCtx.translate(stX, stY);
-        const path = this.getStencilPath(stencil.type, this.BUFFER_SCALE);
-        mCtx.fillStyle = '#ffffff';
-        mCtx.fill(path);
+        const clipPath = this.getStencilClipPath(stencil.type);
+        mCtx.fill(clipPath, 'evenodd');
         mCtx.restore();
-
-        mCtx.globalCompositeOperation = 'source-in';
-        this.drawAerosolDots(mCtx, x, y, sprayRadius, color);
-        mCtx.globalCompositeOperation = 'source-over';
-
-        ctx.drawImage(
-          this.maskCanvas,
-          clipX, clipY, bboxSize, bboxSize,
-          clipX, clipY, bboxSize, bboxSize
-        );
       });
+
+      // Copiar región afectada al canvas principal
+      this.ctx.drawImage(
+        this.maskCanvas,
+        minX, minY, bboxW, bboxH,
+        minX, minY, bboxW, bboxH
+      );
     } else {
-      // Rociado libre directo en la pared si no hay plantillas fijadas
-      this.drawAerosolDots(ctx, x, y, sprayRadius, color);
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const px = x1 + (x2 - x1) * t;
+        const py = y1 + (y2 - y1) * t;
+        this.ctx.drawImage(this.brushCanvas, px - sprayRadius, py - sprayRadius);
+      }
     }
-  }
-
-  drawAerosolDots(targetCtx, x, y, radius, color) {
-    const dots = 80;
-    targetCtx.fillStyle = color;
-    targetCtx.beginPath();
-
-    for (let i = 0; i < dots; i++) {
-      const r = Math.random() * radius;
-      const angle = Math.random() * Math.PI * 2;
-      const px = x + Math.cos(angle) * r;
-      const py = y + Math.sin(angle) * r;
-      const dotSize = Math.random() * 3.8 + 0.8;
-
-      targetCtx.moveTo(px + dotSize, py);
-      targetCtx.arc(px, py, dotSize, 0, Math.PI * 2);
-    }
-
-    targetCtx.fill();
   }
 }
