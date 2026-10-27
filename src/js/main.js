@@ -1,45 +1,141 @@
 import * as THREE from 'three';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CanvasBuffer } from './CanvasBuffer.js';
 
-// 1. Buffer de Pintura (1024x1024) y Textura 3D Optimizada
-const buffer = new CanvasBuffer(1024, 1024);
+// 1. Buffer de Pintura Panorámico (2048x1024)
+const buffer = new CanvasBuffer(2048, 1024);
 const canvasTexture = new THREE.CanvasTexture(buffer.canvas);
 canvasTexture.colorSpace = THREE.SRGBColorSpace;
 canvasTexture.generateMipmaps = false;
 canvasTexture.minFilter = THREE.LinearFilter;
 canvasTexture.magFilter = THREE.LinearFilter;
 
-// 2. Escena, Cámara y Renderer 3D
+buffer.onTextureLoaded = () => {
+  canvasTexture.needsUpdate = true;
+};
+
+// 2. Escena, Cámara y Renderizador
 const container = document.getElementById('webgl-canvas');
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 0, 7);
+camera.position.set(0, 0.2, 7.5);
 
 const renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
 
-// Iluminación
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
-scene.add(ambientLight);
+// -----------------------------------------------------------------
+// 3. CIELO DIURNO (HDRI) Y LUZ SOLAR DIRECTA
+// -----------------------------------------------------------------
+const rgbeLoader = new RGBELoader();
+const skyHdrUrl = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kloppenheim_06_puresky_1k.hdr';
 
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
-dirLight.position.set(5, 5, 4);
-scene.add(dirLight);
-
-// 3. Malla 3D del Afiche Suizo
-const geometry = new THREE.PlaneGeometry(5.5, 5.5);
-const material = new THREE.MeshStandardMaterial({
-  map: canvasTexture,
-  roughness: 0.4,
-  metalness: 0.05
+rgbeLoader.load(skyHdrUrl, (hdrTexture) => {
+  hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background = hdrTexture;
+  // NO se asigna a scene.environment para prevenir reflejos de espejo
 });
 
-const wallMesh = new THREE.Mesh(geometry, material);
-scene.add(wallMesh);
+// Luz solar diurna brillante y directa
+const sunLight = new THREE.DirectionalLight(0xfffaed, 2.5);
+sunLight.position.set(8, 12, 10);
+scene.add(sunLight);
 
-// 4. Malla para la Vista Previa del Stencil bajo el Cursor
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+scene.add(ambientLight);
+
+// -----------------------------------------------------------------
+// 4. MAPAS PBR MATE (RELIEVE Y RUGOSIDAD CERO BRILLO)
+// -----------------------------------------------------------------
+const textureLoader = new THREE.TextureLoader();
+
+const brickNormalMap = textureLoader.load(
+  'https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/red_brick_plaster_01/red_brick_plaster_01_nor_gl_1k.jpg'
+);
+brickNormalMap.wrapS = THREE.RepeatWrapping;
+brickNormalMap.wrapT = THREE.RepeatWrapping;
+brickNormalMap.repeat.set(3, 1.5);
+
+// -----------------------------------------------------------------
+// 5. ESTRUCTURA Y MODELADO DEL MURO 3D (GLTFLOADER + MESH 3D)
+// -----------------------------------------------------------------
+const wallGroup = new THREE.Group();
+scene.add(wallGroup);
+
+// Material 100% MATE sin reflejos (roughness=1.0, metalness=0.0, envMapIntensity=0.0)
+const wallMat = new THREE.MeshStandardMaterial({
+  map: canvasTexture,
+  normalMap: brickNormalMap,
+  normalScale: new THREE.Vector2(1.8, 1.8),
+  roughness: 1.0,
+  metalness: 0.0,
+  envMapIntensity: 0.0
+});
+
+// Muro Frontal Principal (Lienzo Interactivo de Grafiti)
+const wallGeo = new THREE.PlaneGeometry(10.0, 5.0);
+const wallMesh = new THREE.Mesh(wallGeo, wallMat);
+wallMesh.position.z = 0;
+wallGroup.add(wallMesh);
+
+// Carga de Modelo 3D GLTF/GLB de Muro
+const gltfLoader = new GLTFLoader();
+const wallGltfUrl = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/BrickWall/glTF-Binary/BrickWall.glb';
+
+gltfLoader.load(wallGltfUrl, (gltf) => {
+  const gltfWall = gltf.scene;
+  gltfWall.position.set(0, 0, -0.05);
+  gltfWall.scale.set(3.5, 2.5, 1.0);
+
+  gltfWall.traverse((child) => {
+    if (child.isMesh && child.material) {
+      child.material.roughness = 1.0;
+      child.material.metalness = 0.0;
+      child.material.envMapIntensity = 0.0;
+    }
+  });
+
+  wallGroup.add(gltfWall);
+}, undefined, () => {});
+
+// Remate 3D Superior de Ladrillo Sobresaliente
+const brickPillarMat = new THREE.MeshStandardMaterial({
+  color: 0x8a3828,
+  normalMap: brickNormalMap,
+  roughness: 1.0,
+  metalness: 0.0,
+  envMapIntensity: 0.0
+});
+
+const topCoping = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.35, 0.8), brickPillarMat);
+topCoping.position.set(0, 2.68, 0.08);
+wallGroup.add(topCoping);
+
+// Bloque 3D Trasero para profundidad real
+const wallBackMesh = new THREE.Mesh(new THREE.BoxGeometry(10.2, 5.0, 0.6), brickPillarMat);
+wallBackMesh.position.z = -0.31;
+wallGroup.add(wallBackMesh);
+
+// Base Inferior de Ladrillos
+const bottomBase = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.25, 0.8), brickPillarMat);
+bottomBase.position.set(0, -2.62, 0.08);
+wallGroup.add(bottomBase);
+
+// Suelo de Adoquines Urbano
+const groundGeo = new THREE.PlaneGeometry(30, 20);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x6e382d, roughness: 1.0, metalness: 0.0, envMapIntensity: 0.0 });
+const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+groundMesh.rotation.x = -Math.PI / 2;
+groundMesh.position.y = -2.7;
+scene.add(groundMesh);
+
+// -----------------------------------------------------------------
+// 6. MÁSCARA Y PLANTILLAS INTERACTIVAS
+// -----------------------------------------------------------------
 const stencilGeo = new THREE.PlaneGeometry(1.8, 1.8);
 const previewMat = new THREE.MeshBasicMaterial({
   transparent: true,
@@ -48,11 +144,8 @@ const previewMat = new THREE.MeshBasicMaterial({
 });
 const previewMesh = new THREE.Mesh(stencilGeo, previewMat);
 previewMesh.position.z = 0.05;
-scene.add(previewMesh);
+wallGroup.add(previewMesh);
 
-// -----------------------------------------------------------------
-// SISTEMA DE PLANTILLAS COLOCADAS EN LA PARED
-// -----------------------------------------------------------------
 let placedStencils = [];
 let currentTool = 'm';
 let currentColor = '#ff0055';
@@ -95,9 +188,8 @@ function placeStencilAtCurrentUV() {
   mesh.position.x = previewMesh.position.x;
   mesh.position.y = previewMesh.position.y;
   mesh.position.z = 0.02 + placedStencils.length * 0.002;
-  mesh.rotation.copy(wallMesh.rotation);
 
-  scene.add(mesh);
+  wallGroup.add(mesh);
 
   placedStencils.push({
     type: currentTool,
@@ -108,13 +200,33 @@ function placeStencilAtCurrentUV() {
 }
 
 function liftStencils() {
-  placedStencils.forEach(s => scene.remove(s.mesh));
+  placedStencils.forEach(s => wallGroup.remove(s.mesh));
   placedStencils = [];
 }
 
 // -----------------------------------------------------------------
-// EVENTOS DE LA INTERFAZ
+// 7. EVENTOS Y PROGRESO DE REBELIÓN
 // -----------------------------------------------------------------
+const progressFill = document.getElementById('progress-fill');
+const progressText = document.getElementById('progress-text');
+
+function updateUIProgress() {
+  const { completedCount, total, allDone } = buffer.getRebellionProgress();
+  const pct = Math.floor((completedCount / total) * 100);
+
+  if (progressFill) progressFill.style.width = `${pct}%`;
+
+  if (allDone) {
+    if (progressText) {
+      progressText.innerHTML = '<strong style="color: #ffff00;">¡REBELIÓN COMPLETA! MTV UNLEASHED ⚡</strong>';
+    }
+    buffer.triggerMTVReveal();
+  } else {
+    if (progressText) {
+      progressText.innerText = `Cubre los carteles corporativos (${completedCount}/${total})`;
+    }
+  }
+}
 
 document.querySelectorAll('.btn[data-stencil]').forEach(btn => {
   btn.addEventListener('click', (e) => {
@@ -140,6 +252,7 @@ document.getElementById('btn-lift').addEventListener('click', () => {
 document.getElementById('btn-clear').addEventListener('click', () => {
   liftStencils();
   buffer.resetToCorporateGrid();
+  updateUIProgress();
   canvasTexture.needsUpdate = true;
 });
 
@@ -154,8 +267,9 @@ function updateMouseUV(event) {
     currentUV = intersects[0].uv;
     const point = intersects[0].point;
 
-    previewMesh.position.x = point.x;
-    previewMesh.position.y = point.y;
+    const localPoint = wallGroup.worldToLocal(point.clone());
+    previewMesh.position.x = localPoint.x;
+    previewMesh.position.y = localPoint.y;
   } else {
     currentUV = null;
   }
@@ -178,17 +292,10 @@ window.addEventListener('pointerdown', (e) => {
 window.addEventListener('pointermove', (e) => {
   updateMouseUV(e);
 
-  const rotX = (e.clientY / window.innerHeight - 0.5) * 0.18;
-  const rotY = (e.clientX / window.innerWidth - 0.5) * 0.18;
-  wallMesh.rotation.x = rotX;
-  wallMesh.rotation.y = rotY;
-  previewMesh.rotation.x = rotX;
-  previewMesh.rotation.y = rotY;
-
-  placedStencils.forEach(s => {
-    s.mesh.rotation.x = rotX;
-    s.mesh.rotation.y = rotY;
-  });
+  const rotX = (e.clientY / window.innerHeight - 0.5) * 0.08;
+  const rotY = (e.clientX / window.innerWidth - 0.5) * 0.08;
+  wallGroup.rotation.x = rotX;
+  wallGroup.rotation.y = rotY;
 });
 
 window.addEventListener('pointerup', () => {
@@ -203,7 +310,7 @@ window.addEventListener('resize', () => {
 });
 
 // -----------------------------------------------------------------
-// BUCLE DE RENDERIZADO A 60 FPS CONSTANTES
+// 8. BUCLE DE RENDERIZADO
 // -----------------------------------------------------------------
 let lastSprayTime = 0;
 
@@ -214,6 +321,7 @@ function animate(time) {
     if (time - lastSprayTime > 16) {
       const startUV = lastUV || currentUV;
       buffer.sprayPaint(startUV, currentUV, currentColor, 65, placedStencils);
+      updateUIProgress();
       canvasTexture.needsUpdate = true;
       lastSprayTime = time;
       lastUV = { ...currentUV };
